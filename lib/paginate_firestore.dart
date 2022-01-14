@@ -28,7 +28,7 @@ class PaginateFirestore extends StatefulWidget {
     this.onError,
     this.onReachedEnd,
     this.onLoaded,
-    this.emptyDisplay = const EmptyDisplay(),
+    this.onEmpty = const EmptyDisplay(),
     this.separator = const EmptySeparator(),
     this.initialLoader = const InitialLoader(),
     this.bottomLoader = const BottomLoader(),
@@ -39,13 +39,18 @@ class PaginateFirestore extends StatefulWidget {
     this.physics,
     this.listeners,
     this.scrollController,
+    this.allowImplicitScrolling = false,
+    this.pageController,
+    this.onPageChanged,
     this.header,
     this.footer,
     this.isLive = false,
+    this.includeMetadataChanges = false,
+    this.options,
   }) : super(key: key);
 
   final Widget bottomLoader;
-  final Widget emptyDisplay;
+  final Widget onEmpty;
   final SliverGridDelegate gridDelegate;
   final Widget initialLoader;
   final PaginateBuilderType itemBuilderType;
@@ -55,7 +60,9 @@ class PaginateFirestore extends StatefulWidget {
   final ScrollPhysics? physics;
   final Query query;
   final bool reverse;
+  final bool allowImplicitScrolling;
   final ScrollController? scrollController;
+  final PageController? pageController;
   final Axis scrollDirection;
   final Widget separator;
   final bool shrinkWrap;
@@ -64,16 +71,24 @@ class PaginateFirestore extends StatefulWidget {
   final Widget? header;
   final Widget? footer;
 
+  /// Use this only if `isLive = false`
+  final GetOptions? options;
+
+  /// Use this only if `isLive = true`
+  final bool includeMetadataChanges;
+
   @override
   _PaginateFirestoreState createState() => _PaginateFirestoreState();
 
   final Widget Function(Exception)? onError;
 
-  final Widget Function(int, BuildContext, DocumentSnapshot) itemBuilder;
+  final Widget Function(BuildContext, List<DocumentSnapshot>, int) itemBuilder;
 
   final void Function(PaginationLoaded)? onReachedEnd;
 
   final void Function(PaginationLoaded)? onLoaded;
+
+  final void Function(int)? onPageChanged;
 }
 
 class _PaginateFirestoreState extends State<PaginateFirestore> {
@@ -92,7 +107,6 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
               : ErrorDisplay(exception: state.error);
         } else {
           final loadedState = state as PaginationLoaded;
-
           if (widget.onLoaded != null) {
             widget.onLoaded!(loadedState);
           }
@@ -101,11 +115,13 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
           }
 
           if (loadedState.documentSnapshots.isEmpty) {
-            return widget.emptyDisplay;
+            return widget.onEmpty;
           }
           return widget.itemBuilderType == PaginateBuilderType.listView
               ? _buildListView(loadedState)
-              : _buildGridView(loadedState);
+              : widget.itemBuilderType == PaginateBuilderType.gridView
+                  ? _buildGridView(loadedState)
+                  : _buildPageView(loadedState);
         }
       },
     );
@@ -154,8 +170,8 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
       shrinkWrap: widget.shrinkWrap,
       scrollDirection: widget.scrollDirection,
       physics: widget.physics,
-      slivers: <Widget>[
-        if (widget.header != null) SliverToBoxAdapter(child: widget.header),
+      slivers: [
+        if (widget.header != null) widget.header!,
         SliverPadding(
           padding: widget.padding,
           sliver: SliverGrid(
@@ -167,7 +183,10 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
                   return widget.bottomLoader;
                 }
                 return widget.itemBuilder(
-                    index, context, loadedState.documentSnapshots[index]);
+                  context,
+                  loadedState.documentSnapshots,
+                  index,
+                );
               },
               childCount: loadedState.hasReachedEnd
                   ? loadedState.documentSnapshots.length
@@ -175,7 +194,7 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
             ),
           ),
         ),
-        if (widget.footer != null) SliverToBoxAdapter(child: widget.footer),
+        if (widget.footer != null) widget.footer!,
       ],
     );
 
@@ -196,11 +215,12 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
   Widget _buildListView(PaginationLoaded loadedState) {
     var listView = CustomScrollView(
       reverse: widget.reverse,
+      controller: widget.scrollController,
       shrinkWrap: widget.shrinkWrap,
       scrollDirection: widget.scrollDirection,
       physics: widget.physics,
-      slivers: <Widget>[
-        if (widget.header != null) SliverToBoxAdapter(child: widget.header),
+      slivers: [
+        if (widget.header != null) widget.header!,
         SliverPadding(
           padding: widget.padding,
           sliver: SliverList(
@@ -212,8 +232,11 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
                     _cubit!.fetchPaginatedList();
                     return widget.bottomLoader;
                   }
-                  return widget.itemBuilder(itemIndex, context,
-                      loadedState.documentSnapshots[itemIndex]);
+                  return widget.itemBuilder(
+                    context,
+                    loadedState.documentSnapshots,
+                    itemIndex,
+                  );
                 }
                 return widget.separator;
               },
@@ -234,7 +257,7 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
             ),
           ),
         ),
-        if (widget.footer != null) SliverToBoxAdapter(child: widget.footer),
+        if (widget.footer != null) widget.footer!,
       ],
     );
 
@@ -251,6 +274,49 @@ class _PaginateFirestoreState extends State<PaginateFirestore> {
 
     return listView;
   }
+
+  Widget _buildPageView(PaginationLoaded loadedState) {
+    var pageView = Padding(
+      padding: widget.padding,
+      child: PageView.custom(
+        reverse: widget.reverse,
+        allowImplicitScrolling: widget.allowImplicitScrolling,
+        controller: widget.pageController,
+        scrollDirection: widget.scrollDirection,
+        physics: widget.physics,
+        onPageChanged: widget.onPageChanged,
+        childrenDelegate: SliverChildBuilderDelegate(
+          (context, index) {
+            if (index >= loadedState.documentSnapshots.length) {
+              _cubit!.fetchPaginatedList();
+              return widget.bottomLoader;
+            }
+            return widget.itemBuilder(
+              context,
+              loadedState.documentSnapshots,
+              index,
+            );
+          },
+          childCount: loadedState.hasReachedEnd
+              ? loadedState.documentSnapshots.length
+              : loadedState.documentSnapshots.length + 1,
+        ),
+      ),
+    );
+
+    if (widget.listeners != null && widget.listeners!.isNotEmpty) {
+      return MultiProvider(
+        providers: widget.listeners!
+            .map((_listener) => ChangeNotifierProvider(
+                  create: (context) => _listener,
+                ))
+            .toList(),
+        child: pageView,
+      );
+    }
+
+    return pageView;
+  }
 }
 
-enum PaginateBuilderType { listView, gridView }
+enum PaginateBuilderType { listView, gridView, pageView }
